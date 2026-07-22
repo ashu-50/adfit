@@ -1,0 +1,385 @@
+// Ad-to-Landing Page Fit Analyzer — data model
+// Postgres (Supabase). Prisma connects via the pooled URL; migrations use DIRECT_URL.
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["relationJoins"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------- enums
+
+enum Plan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum AnalysisStatus {
+  QUEUED
+  EXTRACTING
+  OCR
+  ANALYZING
+  SCORING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AdSourceType {
+  TEXT
+  IMAGE
+}
+
+enum AdAngle {
+  PAIN_POINT
+  DISCOUNT
+  FEATURE
+  AUTHORITY
+  SOCIAL_PROOF
+  COMPARISON
+  CURIOSITY
+  URGENCY
+  UNKNOWN
+}
+
+enum Dimension {
+  PERSONA_MATCH
+  OFFER_MATCH
+  MESSAGE_MATCH
+  PRODUCT_FRAMING
+  PROOF
+  OBJECTIONS
+  CTA_MATCH
+  ABOVE_FOLD
+  VISUAL_CONTINUITY
+}
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum RenderStrategy {
+  STATIC
+  HEADLESS
+  CACHED
+}
+
+// ---------------------------------------------------------------- core
+
+/// Mirrors auth.users. Row is created by a Postgres trigger on signup
+/// (see prisma/rls.sql) so the app never has to write to the auth schema.
+model User {
+  id             String    @id @db.Uuid
+  email          String    @unique
+  fullName       String?   @map("full_name")
+  avatarUrl      String?   @map("avatar_url")
+  plan           Plan      @default(FREE)
+  stripeCustomerId     String? @unique @map("stripe_customer_id")
+  stripeSubscriptionId String? @unique @map("stripe_subscription_id")
+  planRenewsAt   DateTime? @map("plan_renews_at") @db.Timestamptz(6)
+  onboardedAt    DateTime? @map("onboarded_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  projects   Project[]
+  analyses   Analysis[]
+  usage      UsageRecord[]
+  apiKeys    ApiKey[]
+  events     AuditEvent[]
+
+  @@map("users")
+}
+
+model Project {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  name        String
+  slug        String
+  description String?
+  color       String   @default("#6366f1")
+  archivedAt  DateTime? @map("archived_at") @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  analyses Analysis[]
+
+  @@unique([userId, slug])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("projects")
+}
+
+model Analysis {
+  id        String         @id @default(uuid()) @db.Uuid
+  userId    String         @map("user_id") @db.Uuid
+  projectId String?        @map("project_id") @db.Uuid
+  title     String
+  targetUrl String         @map("target_url") @db.Text
+  urlHash   String         @map("url_hash") @db.Char(64)
+  status    AnalysisStatus @default(QUEUED)
+  progress  Int            @default(0)
+  stage     String?
+  error     String?        @db.Text
+  errorCode String?        @map("error_code")
+
+  overallScore Int?     @map("overall_score")
+  grade        String?  @db.VarChar(2)
+  model        String   @default("gemini-2.5-flash")
+  promptVersion String  @default("v1") @map("prompt_version")
+  inputTokens  Int      @default(0) @map("input_tokens")
+  outputTokens Int      @default(0) @map("output_tokens")
+  costUsdMicros Int     @default(0) @map("cost_usd_micros")
+  durationMs   Int?     @map("duration_ms")
+
+  startedAt   DateTime? @map("started_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project     Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  ads         Ad[]
+  landingPage LandingPage?
+  report      Report?
+  clusters    AdCluster[]
+  events      AnalysisEvent[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, status])
+  @@index([projectId])
+  @@index([urlHash])
+  @@map("analyses")
+}
+
+model Ad {
+  id         String       @id @default(uuid()) @db.Uuid
+  analysisId String       @map("analysis_id") @db.Uuid
+  clusterId  String?      @map("cluster_id") @db.Uuid
+  sourceType AdSourceType @map("source_type")
+  position   Int          @default(0)
+
+  rawText      String? @map("raw_text") @db.Text
+  storagePath  String? @map("storage_path")
+  mimeType     String? @map("mime_type")
+  fileSize     Int?    @map("file_size")
+  ocrText      String? @map("ocr_text") @db.Text
+  ocrConfidence Float? @map("ocr_confidence")
+
+  /// Structured creative extracted by Gemini: headline, primary text,
+  /// CTA label, offer, persona signals, palette, brand marks.
+  parsed  Json?
+  angle   AdAngle @default(UNKNOWN)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  analysis Analysis   @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  cluster  AdCluster? @relation(fields: [clusterId], references: [id], onDelete: SetNull)
+
+  @@index([analysisId, position])
+  @@map("ads")
+}
+
+model AdCluster {
+  id         String  @id @default(uuid()) @db.Uuid
+  analysisId String  @map("analysis_id") @db.Uuid
+  angle      AdAngle
+  label      String
+  rationale  String  @db.Text
+  /// Recommended landing-page blueprint for this angle:
+  /// { hero, headline, subheadline, benefits[], testimonials[], faq[], cta }
+  blueprint  Json
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  ads      Ad[]
+
+  @@index([analysisId])
+  @@map("ad_clusters")
+}
+
+model LandingPage {
+  id         String @id @default(uuid()) @db.Uuid
+  analysisId String @unique @map("analysis_id") @db.Uuid
+
+  url            String         @db.Text
+  finalUrl       String         @map("final_url") @db.Text
+  httpStatus     Int            @map("http_status")
+  strategy       RenderStrategy
+  contentHash    String         @map("content_hash") @db.Char(64)
+  fetchDurationMs Int           @map("fetch_duration_ms")
+
+  title       String?
+  description String? @db.Text
+  lang        String?
+  canonical   String? @db.Text
+  favicon     String? @db.Text
+  ogImage     String? @map("og_image") @db.Text
+
+  /// Full extraction payload — see src/lib/extraction/types.ts (ExtractedPage).
+  /// Kept as JSONB so the extractor can evolve without a migration per field.
+  extracted   Json
+  readableText String @map("readable_text") @db.Text
+  wordCount   Int    @map("word_count")
+  screenshotPath String? @map("screenshot_path")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@index([contentHash])
+  @@map("landing_pages")
+}
+
+model Report {
+  id         String @id @default(uuid()) @db.Uuid
+  analysisId String @unique @map("analysis_id") @db.Uuid
+
+  overallScore Int    @map("overall_score")
+  grade        String @db.VarChar(2)
+  confidence   Float  @default(0.8)
+  summary      String @db.Text
+  verdict      String @db.Text
+
+  strengths      Json @default("[]")
+  weaknesses     Json @default("[]")
+  criticalIssues Json @default("[]") @map("critical_issues")
+  quickWins      Json @default("[]") @map("quick_wins")
+  /// Rewrite suggestions keyed by page slot (headline, subheadline, cta, hero).
+  rewrites       Json @default("{}")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  analysis   Analysis          @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  dimensions DimensionScore[]
+
+  @@map("reports")
+}
+
+model DimensionScore {
+  id       String    @id @default(uuid()) @db.Uuid
+  reportId String    @map("report_id") @db.Uuid
+  dimension Dimension
+  score    Int
+  weight   Float
+  weightedScore Float @map("weighted_score")
+  confidence Float   @default(0.8)
+  applicable Boolean @default(true)
+  summary  String    @db.Text
+  /// [{ id, severity, title, detail, evidence: { adQuote, pageQuote, selector } }]
+  problems Json @default("[]")
+  /// [{ id, priority, effort, impact, title, detail, example }]
+  recommendations Json @default("[]")
+
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@unique([reportId, dimension])
+  @@map("dimension_scores")
+}
+
+model AnalysisEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  analysisId String   @map("analysis_id") @db.Uuid
+  stage      String
+  progress   Int
+  message    String
+  level      String   @default("info")
+  meta       Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@index([analysisId, createdAt])
+  @@map("analysis_events")
+}
+
+// ---------------------------------------------------------------- platform
+
+model UsageRecord {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  /// First day of the billing month, UTC. Makes the unique key cheap to compute.
+  periodStart DateTime @map("period_start") @db.Date
+  analysesRun Int    @default(0) @map("analyses_run")
+  adsProcessed Int   @default(0) @map("ads_processed")
+  inputTokens Int    @default(0) @map("input_tokens")
+  outputTokens Int   @default(0) @map("output_tokens")
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, periodStart])
+  @@map("usage_records")
+}
+
+model RateLimit {
+  key        String   @id
+  tokens     Float
+  lastRefill DateTime @map("last_refill") @db.Timestamptz(6)
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("rate_limits")
+}
+
+model CacheEntry {
+  key       String   @id @db.Char(64)
+  namespace String
+  value     Json
+  hits      Int      @default(0)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([namespace])
+  @@index([expiresAt])
+  @@map("cache_entries")
+}
+
+model ApiKey {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  name       String
+  /// SHA-256 of the key. The plaintext is shown once at creation and never stored.
+  hashedKey  String    @unique @map("hashed_key") @db.Char(64)
+  prefix     String    @db.VarChar(12)
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+model AuditEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  action    String
+  entity    String
+  entityId  String?  @map("entity_id")
+  ip        String?
+  userAgent String?  @map("user_agent")
+  meta      Json?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("audit_events")
+}
+
+model WebhookEvent {
+  id          String   @id
+  type        String
+  processedAt DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  @@map("webhook_events")
+}
