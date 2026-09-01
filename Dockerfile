@@ -45,7 +45,7 @@ ENV DATABASE_URL=postgresql://build:build@localhost:5432/build \
     WORKER_SECRET=build-placeholder-worker-secret \
     NEXT_TELEMETRY_DISABLED=1
 
-RUN ./node_modules/.bin/prisma generate && npm run build -- --no-lint || ./node_modules/.bin/next build
+RUN npx prisma generate && npm run build -- --no-lint || npx next build
 # ---------------------------------------------------------------- runner
 FROM node:20-alpine AS runner
 RUN apk add --no-cache libc6-compat
