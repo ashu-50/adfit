@@ -11,8 +11,9 @@ RUN npm install --omit=dev && npm cache clean --force
 
 COPY tsconfig.json ./
 COPY src ./src
-# tsc is a build-time need only, so it is installed and discarded in one layer.
-RUN npm install --no-save typescript@^5.7.3 && ./node_modules/.bin/tsc -p tsconfig.json && npm remove typescript
+# tsc is a build-time need only; npx --package pins it to the typescript
+# binary explicitly so it can never resolve to the unrelated "tsc" stub package.
+RUN npx --yes --package typescript@^5.7.3 tsc -p tsconfig.json
 
 ENV PORT=4000
 EXPOSE 4000
