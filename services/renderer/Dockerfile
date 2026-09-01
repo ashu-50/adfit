@@ -12,8 +12,7 @@ RUN npm install --omit=dev && npm cache clean --force
 COPY tsconfig.json ./
 COPY src ./src
 # tsc is a build-time need only, so it is installed and discarded in one layer.
-RUN ./node_modules/.bin/prisma generate && npm run build -- --no-lint || ./node_modules/.bin/next build
-ENV PORT=4000
+RUN npm install --no-save typescript@^5.7.3 && ./node_modules/.bin/tsc -p tsconfig.json && npm remove typescriptENV PORT=4000
 EXPOSE 4000
 
 # Chromium spawns a process tree; without an init, zombie renderers accumulate
