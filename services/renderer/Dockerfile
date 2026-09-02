@@ -13,7 +13,7 @@ COPY tsconfig.json ./
 COPY src ./src
 # tsc is a build-time need only; npx --package pins it to the typescript
 # binary explicitly so it can never resolve to the unrelated "tsc" stub package.
-RUN npx --yes --package typescript@^5.7.3 tsc -p tsconfig.json
+RUN npx --yes --package typescript@^5.7.3 --package @types/node@^22.10.5 tsc -p tsconfig.json
 
 ENV PORT=4000
 EXPOSE 4000
