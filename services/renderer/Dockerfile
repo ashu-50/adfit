@@ -19,6 +19,12 @@ FROM mcr.microsoft.com/playwright:v1.49.1-noble AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+# The base image doesn't ship dumb-init; Chromium spawns a process tree and
+# without an init process, zombie renderers accumulate until the container
+# runs out of PIDs.
+RUN apt-get update && apt-get install -y --no-install-recommends dumb-init \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package.json ./
 RUN npm install --omit=dev && npm cache clean --force
 
@@ -27,8 +33,6 @@ COPY --from=builder /app/dist ./dist
 ENV PORT=4000
 EXPOSE 4000
 
-# Chromium spawns a process tree; without an init, zombie renderers accumulate
-# until the container runs out of PIDs.
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["node", "dist/server.js"]
 
