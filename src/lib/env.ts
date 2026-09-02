@@ -15,7 +15,15 @@ const serverSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(20),
   SUPABASE_STORAGE_BUCKET: z.string().default("ad-screenshots"),
 
-  GEMINI_API_KEY: z.string().min(10),
+  GEMINI_API_KEY: z
+    .string()
+    .min(10)
+    .refine(
+      (v) => v.startsWith("AIza"),
+      "GEMINI_API_KEY does not look like a Google AI Studio key (those start with 'AIza'). " +
+        "A value starting with 'AQ.' is an OAuth/ADC credential, not an API key — Gemini calls will fail. " +
+        "Generate a real key at https://aistudio.google.com/apikey.",
+    ),
   /**
    * gemini-2.5-flash is being retired and already 404s for many keys. The two
    * tiers below are the current GA pair: a reasoning model for the scoring and
@@ -37,7 +45,15 @@ const serverSchema = z.object({
   RENDERER_SECRET: z.string().optional(),
   RENDERER_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
 
-  WORKER_SECRET: z.string().min(8),
+  WORKER_SECRET: z
+    .string()
+    .min(24, "WORKER_SECRET must be at least 24 characters — generate one with `openssl rand -hex 32`.")
+    .refine(
+      (v) => v !== "change-me-in-production",
+      "WORKER_SECRET is still the placeholder value. This endpoint has no other authentication — " +
+        "anyone who finds it can trigger processing of any analysis id. Generate a real secret " +
+        "with `openssl rand -hex 32` before deploying.",
+    ),
   ANALYSIS_MAX_DURATION_MS: z.coerce.number().int().positive().default(280_000),
 
   STRIPE_SECRET_KEY: z.string().optional(),

@@ -1,5 +1,7 @@
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { lookup as dnsLookup } from "node:dns";
+import { lookup as dnsLookupPromises } from "node:dns/promises";
+import { isIP, type LookupFunction } from "node:net";
+import { Agent } from "undici";
 import { AppError } from "@/lib/http/errors";
 
 /**
@@ -74,7 +76,7 @@ export async function assertPublicUrl(rawUrl: string): Promise<URL> {
 
   let addresses: { address: string }[];
   try {
-    addresses = await lookup(host, { all: true });
+    addresses = await dnsLookupPromises(host, { all: true });
   } catch {
     throw new AppError("FETCH_FAILED", `We could not resolve ${host}. Check the domain and try again.`);
   }
@@ -87,6 +89,45 @@ export async function assertPublicUrl(rawUrl: string): Promise<URL> {
   }
 
   return url;
+}
+
+/**
+ * Closes the DNS-rebinding gap in assertPublicUrl.
+ *
+ * assertPublicUrl resolves the hostname once, up front, purely to fail fast
+ * with a clear error before we do anything else (robots check, redirect
+ * loop). But `fetch()` re-resolves DNS independently at connect time — an
+ * attacker who controls the DNS record for their own domain can pass the
+ * up-front check with a public IP, then flip the record to 169.254.169.254
+ * (or any private range) before the real connection happens. That's a
+ * standard SSRF bypass.
+ *
+ * The only reliable fix is to re-run the same private-address check at the
+ * exact moment a socket is opened, using a custom `lookup` on the dispatcher.
+ * This does not reuse the earlier resolution (a single pinned IP would break
+ * DNS-based load balancing and multi-A-record hosts); it re-resolves and
+ * re-checks every time, but does so atomically with the connection itself,
+ * so there is no window for the record to change in between.
+ */
+export function createSafeDispatcher(): Agent {
+  const safeLookup: LookupFunction = (hostname, _options, callback) => {
+    // We deliberately ignore the caller-supplied lookup options (family/hints)
+    // and always resolve every address ourselves, so every candidate can be
+    // checked against the private-range list before any one of them is used.
+    dnsLookup(hostname, { all: true }, (err, addresses) => {
+      if (err) return callback(err, "", 4);
+      if (addresses.length === 0) {
+        return callback(new Error(`Could not resolve ${hostname}.`), "", 4);
+      }
+      if (addresses.some((a) => isPrivateAddress(a.address))) {
+        return callback(new Error(`${hostname} resolved to a private address; refusing to connect.`), "", 4);
+      }
+      const chosen = addresses[0]!;
+      callback(null, chosen.address, chosen.family);
+    });
+  };
+
+  return new Agent({ connect: { lookup: safeLookup } });
 }
 
 /** Cheap, permissive robots check. We identify ourselves and honour Disallow. */

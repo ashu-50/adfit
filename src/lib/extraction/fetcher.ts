@@ -1,4 +1,5 @@
-import { assertPublicUrl, isAllowedByRobots } from "./guard";
+import { assertPublicUrl, isAllowedByRobots, createSafeDispatcher } from "./guard";
+import { fetch as undiciFetch } from "undici";
 import type { FetchResult } from "./types";
 import { serverEnv } from "@/lib/env";
 import { AppError } from "@/lib/http/errors";
@@ -32,10 +33,11 @@ export async function fetchStatic(rawUrl: string, signal?: AbortSignal): Promise
 
   let current = url;
   let response: Response | null = null;
+  const dispatcher = createSafeDispatcher();
 
   // Manual redirect following so every hop is re-checked against the SSRF guard.
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    response = await fetch(current, {
+    response = (await undiciFetch(current, {
       headers: {
         "user-agent": USER_AGENT,
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -43,9 +45,10 @@ export async function fetchStatic(rawUrl: string, signal?: AbortSignal): Promise
       },
       redirect: "manual",
       signal: combined,
+      dispatcher,
     }).catch((err: unknown) => {
       throw new AppError("FETCH_FAILED", `We could not reach ${current.hostname}.`, { cause: err });
-    });
+    })) as unknown as Response;
 
     if (![301, 302, 303, 307, 308].includes(response.status)) break;
 
